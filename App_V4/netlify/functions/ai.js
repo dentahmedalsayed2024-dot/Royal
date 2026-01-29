@@ -29,7 +29,6 @@ function extractUserContent(incoming){
     const task = String(incoming.task);
     const payload = incoming.payload || {};
     const meta = incoming.meta || {};
-    // حاول تلمّ النص من أشهر مفاتيح
     const text =
       payload.text ?? payload.prompt ?? payload.transcript ?? payload.notes ?? payload.question ??
       (typeof payload === "string" ? payload : "") ??
@@ -96,9 +95,7 @@ exports.handler = async (event) => {
           ? mode.text
           : JSON.stringify({ payload: mode.payload, meta: mode.meta }, null, 2);
 
-      // ✅ IMPORTANT:
-      // بعض الموديلات (خصوصًا free routes) ترفض role=system
-      // فبنحط تعليمات النظام داخل user message بدل system message
+      // ✅ FIX: avoid role="system" (some free routes/models reject it -> 400)
       messages = [
         { role: "user", content: `SYSTEM:\n${sys}\n\nUSER:\n${packed}` }
       ];
@@ -131,7 +128,7 @@ exports.handler = async (event) => {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": "https://super-sfogliatella-edee76.netlify.app",
+        "HTTP-Referer": "https://darling-crumble-f08197.netlify.app",
         "X-Title": "Royal Ray Zone",
       },
       body: JSON.stringify(payload),
@@ -159,7 +156,6 @@ exports.handler = async (event) => {
       };
     }
 
-    // ✅ رجّع Contract ثابت للواجهة + raw
     const aiText = data?.choices?.[0]?.message?.content ?? "";
     return {
       statusCode: 200,
