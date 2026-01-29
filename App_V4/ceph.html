@@ -369,7 +369,7 @@
       border-radius: 10px;
       cursor: pointer;
       font-weight: 800;
-      font-size: 14px;
+      font-size: 13px;
       letter-spacing: 0.2px;
       box-shadow: 0 10px 24px rgba(0,0,0,0.25);
       transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
@@ -1115,7 +1115,7 @@
       <div style="display: flex; flex-direction: column; gap: 20px;">
         
         <!-- Treatment Canvas -->
-        <div style="flex: 0 0 220px; height: 220px; background: #000; border-radius: 12px; border: 1px solid var(--gold); position: relative; overflow: hidden;">
+        <div style="flex: 1; background: #000; border-radius: 12px; border: 1px solid var(--gold); position: relative; overflow: hidden;">
           <canvas id="treatmentCanvas" style="width: 100%; height: 100%;"></canvas>
           <input id="tpImageUploadInput" type="file" accept="image/*" style="display:none" onchange="tpHandleImageUpload(event)">
           <button class="tpUploadBtn" type="button" onclick="document.getElementById('tpImageUploadInput').click()">📷 Upload Image</button>
@@ -1145,7 +1145,7 @@
           </div>
           
           <label style="display: block; font-size: 13px; margin-bottom: 5px; color: #555;">Treatment Phases</label>
-          <textarea id="treatmentPhases" style="width: 100%; height: 320px; padding: 12px; border-radius: 8px; border: 1px solid #ddd; font-family: Arial, Roboto, 'Open Sans', sans-serif; font-size: 14px; resize: vertical; background:#fff; color:#111;">
+          <textarea id="treatmentPhases" style="width: 100%; height: 120px; padding: 12px; border-radius: 8px; border: 1px solid #ddd; font-family: Arial, Roboto, 'Open Sans', sans-serif; font-size: 13px; resize: vertical; background:#fff; color:#111;">
 Phase 1 (Months 1-6): Alignment and leveling
 - Bond MBT 0.022" brackets
 - Sequence: NiTi 0.014" → 0.016" → 0.018"
@@ -4620,35 +4620,204 @@ renderTable('tbl_occlusion', occlusionRows, { showSeverity:false });
         duration_months: (document.getElementById('treatmentDuration')?.value || '18')
       };
 
-      // Prepare prompt (English output)
+      // Prepare prompt (Arabic output)
       const prompt = `
 You are an orthodontic treatment planning assistant.
+Generate a patient-specific orthodontic treatment plan based ONLY on the cephalometric final written analyses below (Steiner, Downs, Jarabak).
+If something is missing, state what is missing and proceed with safe assumptions.
 
-Generate a patient-specific orthodontic treatment plan based ONLY on the cephalometric FINAL WRITTEN analyses below (Steiner, Downs, Jarabak).
-If any analysis is missing, clearly state what is missing and proceed with conservative, safe assumptions.
+OUTPUT REQUIREMENTS (Arabic):
+- Start with: "ملخص تشخيصي" (2-4 lines)
+- Then: "الأهداف العلاجية" (bullet points)
+- Then: "خطة العلاج على مراحل" (Phase 1/2/3 with months range)
+- Include: appliance system, archwire sequence, elastics/anchorage, extraction decision (if indicated), and retention.
+- Keep it practical and clinic-ready.
 
-LANGUAGE: English ONLY.
+PREFERENCES:
+- Difficulty: ${preferences.difficulty}
+- Target duration (months): ${preferences.duration_months}
 
-OUTPUT FORMAT (use clear headings):
-1) Diagnostic Summary (2–5 lines)
-2) Key Cephalometric Findings (bullet points; reference Steiner/Downs/Jarabak where relevant)
-3) Treatment Objectives (bullet points)
-4) Treatment Plan by Phases (Phase 1 / Phase 2 / Phase 3 if needed; include appliances, mechanics, and timing)
-5) Estimated Duration & Difficulty (use provided preferences)
-6) Risks / Alternatives / When to Refer (brief)
-7) Retention Plan (clear)
-8) What Additional Data Would Improve the Plan (if any)
-
-Be clinically cautious. Do not claim certainty. Avoid prescribing medications.
-
-=== FINAL WRITTEN ANALYSES ===
+FINAL ANALYSES:
 ${analysisPack}
+`.trim();
 
-=== PREFERENCES ===
-Difficulty: ${preferences.difficulty}
-Duration (months): ${preferences.duration_months}
-`;
-link.click();
+      try{
+          if(!haveAny){
+            notify("⚠️ Written analyses (Steiner/Downs/Jarabak) not found yet. Generating a generic plan based on available data…", "warning");
+          }else{
+            notify("Generating treatment plan with AI…", "info");
+          }
+
+          if(tp){
+            tp.value = "Generating AI treatment plan…";
+          }
+
+          const resp = await fetch('/.netlify/functions/ai', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              task: 'ceph_treatment_planner',
+              payload: { text: prompt },
+              meta: { lang: 'ar' }
+            })
+          });
+
+          const data = await resp.json().catch(()=> ({}));
+
+          if(!resp.ok || !data || data.ok === false){
+            throw new Error(data?.error || `HTTP ${resp.status}`);
+          }
+
+          const txt = data.text || data?.raw?.choices?.[0]?.message?.content || '';
+          if(tp) tp.value = txt;
+
+          // cache last plan
+          try{
+            localStorage.setItem('rrz_last_ceph_treatment_plan', JSON.stringify({
+              at: new Date().toISOString(),
+              difficulty: preferences.difficulty,
+              duration_months: preferences.duration_months,
+              plan_text: txt
+            }));
+          }catch(e){}
+
+          notify("AI treatment plan generated successfully.", "success");
+          return txt;
+      }catch(e){
+          console.warn('AI Treatment Planner failed, fallback to local:', e);
+          try{
+              if (typeof generateTreatmentFromAnalysisLocal === 'function'){
+                generateTreatmentFromAnalysisLocal();
+                notify("AI failed — generated a local (basic) plan.", "warning");
+                return (document.getElementById('treatmentPhases')?.value || '');
+              }
+          }catch(e2){}
+          notify("Failed to generate treatment plan. Please try again.", "error");
+          return "";
+      }
+  }
+  // ===== END RRZ AI PATCH =====
+
+function generateTreatmentFromAnalysisLocal() {
+      const angles = calculateAllAngles ? calculateAllAngles() : {};
+      const measurements = calculateLinearMeasurements ? calculateLinearMeasurements() : {};
+
+      const duration = document.getElementById('treatmentDuration').value;
+      const difficulty = document.getElementById('treatmentDifficulty').value;
+
+      const notes = [];
+      const flags = [];
+
+      if (angles.ANB !== undefined && angles.ANB !== null) {
+          if (angles.ANB > 4) { flags.push('Skeletal tendency: Class II'); notes.push('Consider Class II correction mechanics aligned with case objectives.'); }
+          else if (angles.ANB < 0) { flags.push('Skeletal tendency: Class III'); notes.push('Consider Class III correction mechanics aligned with case objectives.'); }
+          else { flags.push('Skeletal tendency: Class I'); notes.push('Maintain Class I skeletal relationship while optimizing dental alignment/occlusion.'); }
+      }
+
+      if (angles.FMA !== undefined && angles.FMA !== null) {
+          if (angles.FMA >= 29) { flags.push('Vertical tendency: Hyperdivergent'); notes.push('Prioritize vertical control; monitor mandibular plane and facial height changes.'); }
+          else if (angles.FMA <= 20) { flags.push('Vertical tendency: Hypodivergent'); notes.push('Monitor deep bite tendency; avoid excessive incisor intrusion unless planned.'); }
+          else { flags.push('Vertical tendency: Normodivergent'); }
+      }
+
+      const phases = [
+          {
+              name: "Phase 1: Baseline Setup & Alignment",
+              duration: "Early phase",
+              tasks: [
+                  "Confirm landmark accuracy (repeatability check on key planes).",
+                  "Start alignment sequence while maintaining planned plane controls.",
+                  "Establish baseline overjet/overbite targets informed by cephalometric angles."
+              ]
+          },
+          {
+              name: "Phase 2: Correction & Control",
+              duration: "Mid phase",
+              tasks: [
+                  "Apply AP correction strategies consistent with ANB tendency and clinical objectives.",
+                  "Apply vertical/occlusal control consistent with FMA/Y-axis/Mx–Mn findings.",
+                  "Maintain incisor inclination targets (IMPA, L1–Occlusal) during space management."
+              ]
+          },
+          {
+              name: "Phase 3: Finishing & Stability",
+              duration: `Late phase (to Month ${duration})`,
+              tasks: [
+                  "Refine intercuspation and occlusal plane goals.",
+                  "Finalize incisor display/torque within planned envelope.",
+                  "Retention planning based on achieved planes and stability risk factors."
+              ]
+          }
+      ];
+
+      document.getElementById('treatmentPhases').value = phases.map(phase => 
+          `${phase.name} (${phase.duration}):
+${phase.tasks.map(task => `- ${task}`).join('\n')}`
+      ).join('\n\n');
+
+      updateTreatmentGoalsFromAnalysis(angles, {}, {});
+
+      if (flags.length || notes.length) {
+          document.getElementById('treatmentPhases').value += 
+              `\n\n=== Summary (Angles/Planes) ===\n` +
+              (flags.length ? `Flags:\n- ${flags.join('\n- ')}\n` : '') +
+              (notes.length ? `Notes:\n- ${notes.join('\n- ')}\n` : '');
+      }
+
+      showNotification("Treatment plan generated from angles/planes!", "success");
+  }
+
+  function updateTreatmentGoalsFromAnalysis(angles, jarabak, tweed) {
+      const goalsContainer = document.getElementById('treatmentGoals');
+
+      let goals = [
+          { id: 'goal1', text: 'Optimize skeletal and dental relationship (angles-driven)', checked: true },
+          { id: 'goal2', text: 'Level and align arches with plane control', checked: true },
+          { id: 'goal3', text: 'Establish target overjet/overbite consistent with cephalometrics', checked: true },
+          { id: 'goal4', text: 'Improve soft tissue profile within planned envelope', checked: true },
+          { id: 'goal5', text: 'Achieve functional occlusion with stable planes', checked: true },
+          { id: 'goal6', text: 'Ensure long-term stability and retention', checked: true }
+      ];
+
+      if (angles.ANB !== undefined && angles.ANB !== null) {
+          if (angles.ANB > 4) goals[0].text = 'Reduce Class II tendency (ANB-guided) while maintaining stability';
+          else if (angles.ANB < 0) goals[0].text = 'Reduce Class III tendency (ANB-guided) while maintaining stability';
+          else goals[0].text = 'Maintain Class I skeletal tendency (ANB-guided)';
+      }
+
+      if ((angles.FMA !== undefined && angles.FMA !== null && angles.FMA >= 29) || (angles.Yaxis !== undefined && angles.Yaxis !== null && angles.Yaxis > 65)) {
+          goals.push({ id: 'goal7', text: 'Control vertical dimension (FMA/Y-axis guided)', checked: true });
+      }
+      if (angles.CantOcclusal !== undefined && angles.CantOcclusal !== null && angles.CantOcclusal > 13) {
+          goals.push({ id: 'goal8', text: 'Manage occlusal plane cant as indicated', checked: true });
+      }
+      if (angles.IMPA !== undefined && angles.IMPA !== null && (angles.IMPA > 100 || angles.IMPA < 85)) {
+          goals.push({ id: 'goal9', text: 'Normalize lower incisor inclination (IMPA/L1–Occlusal guided)', checked: true });
+      }
+
+      goalsContainer.innerHTML = goals.map(goal => `
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+              <input type="checkbox" id="${goal.id}" ${goal.checked ? 'checked' : ''} style="transform: scale(1.2);">
+              <label for="${goal.id}">${goal.text}</label>
+          </div>
+      `).join('');
+  }
+
+  function saveTreatmentPlan() {
+      treatmentPlan.duration = document.getElementById('treatmentDuration').value;
+      treatmentPlan.difficulty = document.getElementById('treatmentDifficulty').value;
+      treatmentPlan.phases = document.getElementById('treatmentPhases').value;
+      treatmentPlan.updated = new Date().toISOString();
+      
+      localStorage.setItem('rrz_treatment_plan', JSON.stringify(treatmentPlan));
+      
+      const dataStr = JSON.stringify(treatmentPlan, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(dataBlob);
+      link.download = `Treatment_Plan_${new Date().toISOString().split('T')[0]}.json`;
+      link.click();
       
       showNotification("Treatment plan saved successfully!", "success");
   }
