@@ -4589,109 +4589,111 @@ renderTable('tbl_occlusion', occlusionRows, { showSeverity:false });
 
 // ===== RRZ AI PATCH: Treatment Planner -> Unified AI Gateway (ceph_treatment_planner) =====
   async function generateTreatmentFromAnalysis(opts = {}) {
-      // Prefer AI via RRZ_AI (Netlify Gateway). Fallback to local heuristic if offline/unavailable.
+      // TreatmentPlan AI (Ceph) — reads final Steiner/Downs/Jarabak written analyses and generates a tailored plan.
       const options = opts || {};
+      const tp = document.getElementById('treatmentPhases');
+
+      const notify = (msg, type)=>{
+        try{ if (typeof showNotification === 'function') return showNotification(msg, type); }catch(e){}
+        try{ console.log(type ? `[${type}]` : '', msg); }catch(e){}
+      };
+
+      const getText = (id)=>{
+        const el = document.getElementById(id);
+        return (el?.innerText || el?.textContent || '').trim();
+      };
+
+      const steiner = getText('tbl_written_steiner');
+      const downs   = getText('tbl_written_downs');
+      const jarabak = getText('tbl_written_jarabak');
+
+      // Fallback: if written analyses not built yet, we can still try building input from internal calculators
+      const haveAny = !!(steiner || downs || jarabak);
+      const analysisPack = [
+        "STEINER (final written):\n" + (steiner || "[missing]"),
+        "DOWNS (final written):\n"   + (downs   || "[missing]"),
+        "JARABAK (final written):\n" + (jarabak || "[missing]")
+      ].join("\n\n");
+
+      const preferences = {
+        difficulty: (document.getElementById('treatmentDifficulty')?.value || 'moderate'),
+        duration_months: (document.getElementById('treatmentDuration')?.value || '18')
+      };
+
+      // Prepare prompt (Arabic output)
+      const prompt = `
+You are an orthodontic treatment planning assistant.
+Generate a patient-specific orthodontic treatment plan based ONLY on the cephalometric final written analyses below (Steiner, Downs, Jarabak).
+If something is missing, state what is missing and proceed with safe assumptions.
+
+OUTPUT REQUIREMENTS (Arabic):
+- Start with: "ملخص تشخيصي" (2-4 lines)
+- Then: "الأهداف العلاجية" (bullet points)
+- Then: "خطة العلاج على مراحل" (Phase 1/2/3 with months range)
+- Include: appliance system, archwire sequence, elastics/anchorage, extraction decision (if indicated), and retention.
+- Keep it practical and clinic-ready.
+
+PREFERENCES:
+- Difficulty: ${preferences.difficulty}
+- Target duration (months): ${preferences.duration_months}
+
+FINAL ANALYSES:
+${analysisPack}
+`.trim();
+
       try{
-          const input = options.inputOverride || rrzBuildCephAIInput();
-
-          if (!window.RRZ_AI || typeof window.RRZ_AI.call !== 'function'){
-              throw new Error('AI client not available');
+          if(!haveAny){
+            notify("⚠️ Written analyses (Steiner/Downs/Jarabak) not found yet. Generating a generic plan based on available data…", "warning");
+          }else{
+            notify("Generating treatment plan with AI…", "info");
           }
 
-          // Notify only if manual (avoid annoying alerts on auto)
-          if(!options.auto){
-            showNotification("Generating treatment plan with AI...", "info");
+          if(tp){
+            tp.value = "Generating AI treatment plan…";
           }
 
-          // Upstream contract
-          const res = await window.RRZ_AI.call('ceph_treatment_planner', input, { lang: 'ar' });
+          const resp = await fetch('/.netlify/functions/ai', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              task: 'ceph_treatment_planner',
+              payload: { text: prompt },
+              meta: { lang: 'ar' }
+            })
+          });
 
-          if (!res || !res.ok){
-              throw new Error(res?.error || 'AI call failed');
+          const data = await resp.json().catch(()=> ({}));
+
+          if(!resp.ok || !data || data.ok === false){
+            throw new Error(data?.error || `HTTP ${resp.status}`);
           }
 
-          const r = res.result || {};
-          const txt = (function formatPlan(obj){
-              // If model returned raw text inside {raw:...}
-              if (obj && typeof obj === 'object' && typeof obj.raw === 'string' && Object.keys(obj).length === 1){
-                  return obj.raw;
-              }
+          const txt = data.text || data?.raw?.choices?.[0]?.message?.content || '';
+          if(tp) tp.value = txt;
 
-              const lines = [];
-              const addH = (h)=>{ lines.push(`
-${h}
-`); };
-              const addList = (arr)=>{ (arr||[]).forEach(x=>lines.push(`- ${x}`)); };
-
-              if (obj.diagnostic_summary) { addH("ملخص تشخيصي"); lines.push(String(obj.diagnostic_summary)); }
-              if (Array.isArray(obj.problem_list) && obj.problem_list.length){ addH("قائمة المشاكل"); addList(obj.problem_list); }
-              if (Array.isArray(obj.objectives) && obj.objectives.length){ addH("الأهداف العلاجية"); addList(obj.objectives); }
-
-              if (Array.isArray(obj.plan_phases) && obj.plan_phases.length){
-                  addH("مراحل العلاج");
-                  obj.plan_phases.forEach((ph, i)=>{
-                      const name = ph?.name ? String(ph.name) : `Phase ${i+1}`;
-                      lines.push(`${name}:`);
-                      const steps = ph?.steps || ph?.tasks || [];
-                      if (Array.isArray(steps) && steps.length){
-                          steps.forEach(s=>lines.push(`  - ${s}`));
-                      }
-                  });
-              }
-
-              if (Array.isArray(obj.appliance_options) && obj.appliance_options.length){
-                  addH("خيارات الأجهزة/الميكانيك"); addList(obj.appliance_options);
-              }
-              if (obj.anchorage){ addH("Anchorage / التحكم"); lines.push(String(obj.anchorage)); }
-              if (Array.isArray(obj.risks_and_consents) && obj.risks_and_consents.length){
-                  addH("المخاطر والموافقة"); addList(obj.risks_and_consents);
-              }
-              if (Array.isArray(obj.follow_up) && obj.follow_up.length){
-                  addH("المتابعة"); addList(obj.follow_up);
-              }
-
-              return lines.join('\n').trim() || "No plan generated.";
-          })(r);
-
-          // Write into UI if panel is open
-          const phasesEl = document.getElementById('treatmentPhases');
-          if (phasesEl){
-              phasesEl.value = txt;
-          }
-
-          // Persist into treatmentPlan storage (so it appears even if user opens planner later)
+          // cache last plan
           try{
-              const plan = JSON.parse(localStorage.getItem('rrz_treatment_plan') || 'null') || {};
-              plan.duration = input?.preferences?.duration_months || plan.duration;
-              plan.difficulty = input?.preferences?.difficulty || plan.difficulty;
-              plan.phases = txt;
-              plan.updated = new Date().toISOString();
-              localStorage.setItem('rrz_treatment_plan', JSON.stringify(plan));
+            localStorage.setItem('rrz_last_ceph_treatment_plan', JSON.stringify({
+              at: new Date().toISOString(),
+              difficulty: preferences.difficulty,
+              duration_months: preferences.duration_months,
+              plan_text: txt
+            }));
           }catch(e){}
 
-          // Store last AI result with a hash to prevent repeats
-          try{
-              localStorage.setItem('rrz_last_ai_treatment_plan', JSON.stringify({
-                at: new Date().toISOString(),
-                hash: options.hash || window.RRZ_LAST_TP_HASH || null,
-                result: r,
-                text: txt
-              }));
-          }catch(e){}
-
-          if(!options.auto){
-            showNotification("AI treatment plan generated successfully.", "success");
-          }
+          notify("AI treatment plan generated successfully.", "success");
           return txt;
       }catch(e){
           console.warn('AI Treatment Planner failed, fallback to local:', e);
           try{
-              generateTreatmentFromAnalysisLocal();
-          }catch(e2){
-              if(!options.auto){
-                showNotification("Failed to generate treatment plan. Please try again.", "error");
+              if (typeof generateTreatmentFromAnalysisLocal === 'function'){
+                generateTreatmentFromAnalysisLocal();
+                notify("AI failed — generated a local (basic) plan.", "warning");
+                return (document.getElementById('treatmentPhases')?.value || '');
               }
-          }
+          }catch(e2){}
+          notify("Failed to generate treatment plan. Please try again.", "error");
+          return "";
       }
   }
   // ===== END RRZ AI PATCH =====
