@@ -96,9 +96,11 @@ exports.handler = async (event) => {
           ? mode.text
           : JSON.stringify({ payload: mode.payload, meta: mode.meta }, null, 2);
 
+      // ✅ IMPORTANT:
+      // بعض الموديلات (خصوصًا free routes) ترفض role=system
+      // فبنحط تعليمات النظام داخل user message بدل system message
       messages = [
-        { role: "system", content: sys },
-        { role: "user", content: packed }
+        { role: "user", content: `SYSTEM:\n${sys}\n\nUSER:\n${packed}` }
       ];
     } else {
       return {
