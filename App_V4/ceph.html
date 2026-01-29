@@ -1167,8 +1167,7 @@ Phase 3 (Months 13-18): Finishing and detailing
     <!-- Footer -->
     <div style="margin-top: 25px; padding-top: 20px; border-top: 2px solid var(--gold); display: flex; justify-content: space-between; align-items: center;">
       <button type="button" style="background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 10px; cursor: pointer; font-weight: bold;" onclick="generateTreatmentFromAnalysis()">🤖 Generate from Analysis</button>
-      <button type="button" style="background: var(--success); color: white; border: none; padding: 10px 20px; border-radius: 10px; cursor: pointer; font-weight: bold;" onclick="saveTreatmentPlan()">💾 Save Plan</button>
-    </div>
+</div>
   </div>
 </div>
 
@@ -4620,18 +4619,18 @@ renderTable('tbl_occlusion', occlusionRows, { showSeverity:false });
         duration_months: (document.getElementById('treatmentDuration')?.value || '18')
       };
 
-      // Prepare prompt (Arabic output)
+      // Prepare prompt (English output)
       const prompt = `
 You are an orthodontic treatment planning assistant.
 Generate a patient-specific orthodontic treatment plan based ONLY on the cephalometric final written analyses below (Steiner, Downs, Jarabak).
-If something is missing, state what is missing and proceed with safe assumptions.
+If something is missing, explicitly state what is missing and proceed with conservative, safe assumptions.
 
-OUTPUT REQUIREMENTS (Arabic):
-- Start with: "ملخص تشخيصي" (2-4 lines)
-- Then: "الأهداف العلاجية" (bullet points)
-- Then: "خطة العلاج على مراحل" (Phase 1/2/3 with months range)
+OUTPUT REQUIREMENTS (English):
+- Start with: "Diagnostic Summary" (2–4 lines)
+- Then: "Treatment Objectives" (bullet points)
+- Then: "Phased Treatment Plan" (Phase 1/2/3 with an estimated months range)
 - Include: appliance system, archwire sequence, elastics/anchorage, extraction decision (if indicated), and retention.
-- Keep it practical and clinic-ready.
+- Keep it practical, clinic-ready, and written in clear professional English.
 
 PREFERENCES:
 - Difficulty: ${preferences.difficulty}
@@ -4658,7 +4657,7 @@ ${analysisPack}
             body: JSON.stringify({
               task: 'ceph_treatment_planner',
               payload: { text: prompt },
-              meta: { lang: 'ar' }
+              meta: { lang: 'en' }
             })
           });
 
