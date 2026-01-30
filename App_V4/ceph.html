@@ -2137,6 +2137,28 @@ updateLandmarkSidebarItem(key, false);
     return angle;
   }
 
+  // ====================================================
+  // ========== RRZ: Angle normalization helpers =========
+  // ====================================================
+  // Many cephalometric angles are *undirected* (a line has no arrow).
+  // If the user draws a line "backwards", the raw angle becomes its supplement (180 - angle),
+  // which can produce outliers like 151° instead of ~29°.
+  //
+  // To stabilize results (and match WebCeph-style conventions), we normalize selected angles
+  // by choosing the value (angle vs 180-angle) that is *closest to the published mean*.
+  function normalizeAngleToMean(angleDeg, meanDeg){
+    if (angleDeg === undefined || angleDeg === null) return angleDeg;
+    const a = Number(angleDeg);
+    if (!isFinite(a)) return angleDeg;
+    const mean = Number(meanDeg);
+    if (!isFinite(mean)) return a;
+    // raw from dot-product is in [0..180]; enforce safety anyway
+    const raw = Math.max(0, Math.min(180, Math.abs(a)));
+    const sup = 180 - raw;
+    return (Math.abs(raw - mean) <= Math.abs(sup - mean)) ? raw : sup;
+  }
+
+
   // ===== RRZ V7: Modified distance functions to use calibration scale =====
   function dist(p1, p2){ 
     const pixelDist = Math.hypot(p2.left - p1.left, p2.top - p1.top);
@@ -2515,22 +2537,48 @@ function rrzIncisorAxisInfo(apexKey, coronalKey, label) {
         angles.ANB = parseFloat(angleAt(cephPoints.A, cephPoints.N, cephPoints.B).toFixed(1));
     }
     
-    if (allPointsExist('Po', 'Or', 'Go', 'Me')) {
-        angles.FMA = parseFloat(calculateAngle(cephPoints.Po, cephPoints.Or, cephPoints.Go, cephPoints.Me));
+    // FMA (Tweed): Frankfort plane (Po-Or) to mandibular plane (Go-Gn preferred; fallback Go-Me)
+    if (allPointsExist('Po', 'Or', 'Go', 'Gn')) {
+        const rawFMA = parseFloat(calculateAngle(cephPoints.Po, cephPoints.Or, cephPoints.Go, cephPoints.Gn));
+        const acuteFMA = Math.min(rawFMA, 180 - rawFMA);
+        angles.FMA = parseFloat(acuteFMA.toFixed(1));
+    } else if (allPointsExist('Po', 'Or', 'Go', 'Me')) {
+        const rawFMA = parseFloat(calculateAngle(cephPoints.Po, cephPoints.Or, cephPoints.Go, cephPoints.Me));
+        const acuteFMA = Math.min(rawFMA, 180 - rawFMA);
+        angles.FMA = parseFloat(acuteFMA.toFixed(1));
     }
-    
-    if (allPointsExist('Go', 'Me', 'L1A', 'L1E')) {
-        angles.IMPA = parseFloat(calculateAngle(cephPoints.Go, cephPoints.Me, cephPoints.L1A, cephPoints.L1E));
+
+// IMPA (Tweed): derived from Tweed triangle (FMA + FMIA + IMPA = 180)
+    // (Computed after FMIA is available to prevent acute/obtuse flipping.)
+
+// Downs (WebCeph-style): "Incisor mandibular plane angle" as deviation from 90°,
+    // using the Downs mandibular plane definition (Go–Gn). Use the obtuse internal angle.
+    if (allPointsExist('Go', 'Gn', 'L1A', 'L1E')) {
+        let dnRaw = parseFloat(calculateAngle(cephPoints.Go, cephPoints.Gn, cephPoints.L1A, cephPoints.L1E));
+        if (!isNaN(dnRaw) && dnRaw < 90) dnRaw = 180 - dnRaw;
+        angles.DownIncisorMandPlane = parseFloat((dnRaw - 90).toFixed(1));
+    } else if (allPointsExist('Go', 'Me', 'L1A', 'L1E')) {
+        // Fallback if Gn not available
+        let dnRaw = parseFloat(calculateAngle(cephPoints.Go, cephPoints.Me, cephPoints.L1A, cephPoints.L1E));
+        if (!isNaN(dnRaw) && dnRaw < 90) dnRaw = 180 - dnRaw;
+        angles.DownIncisorMandPlane = parseFloat((dnRaw - 90).toFixed(1));
     }
     
 
 
     // Tweed FMIA: Frankfort plane (Po-Or) to mandibular incisor axis (L1A-L1E)
     if (allPointsExist('Po', 'Or', 'L1A', 'L1E')) {
-        angles.FMIA = parseFloat(calculateAngle(cephPoints.Po, cephPoints.Or, cephPoints.L1A, cephPoints.L1E));
+        const rawFMIA = parseFloat(calculateAngle(cephPoints.Po, cephPoints.Or, cephPoints.L1A, cephPoints.L1E));
+        const acuteFMIA = Math.min(rawFMIA, 180 - rawFMIA);
+        angles.FMIA = parseFloat(acuteFMIA.toFixed(1));
     }
 
-    // Mandibular plane to SN (Steiner): Go-Gn to SN
+    // IMPA (Tweed): derived for internal consistency (FMA + FMIA + IMPA = 180)
+    if (typeof angles.FMA === 'number' && typeof angles.FMIA === 'number') {
+        angles.IMPA = parseFloat((180 - (angles.FMA + angles.FMIA)).toFixed(1));
+    }
+
+// Mandibular plane to SN (Steiner): Go-Gn to SN
     if (allPointsExist('Go', 'Gn', 'S', 'N')) {
         angles.GoGn_SN = parseFloat(calculateAngle(cephPoints.Go, cephPoints.Gn, cephPoints.S, cephPoints.N));
     }
@@ -2610,6 +2658,10 @@ if (allPointsExist('S', 'Gn', 'Po', 'Or')) {
     
     if (op && allPointsExist('L1A', 'L1E')) {
         angles.IncisorOcclusal = parseFloat(calculateAngle(cephPoints.L1A, cephPoints.L1E, op[0], op[1]));
+        // Downs (WebCeph-style): 90° minus the acute angle between lower incisor axis and occlusal plane
+        const _theta = angles.IncisorOcclusal;
+        const _acute = Math.min(_theta, 180 - _theta);
+        angles.DownIncisorOcclusal = parseFloat((90 - _acute).toFixed(1));
     }
     
     if (allPointsExist('S', 'Ar', 'Go')) {
@@ -2706,7 +2758,46 @@ if (allPointsExist('S', 'Gn', 'Po', 'Or')) {
         angles.U1_SN = parseFloat(calculateAngle(cephPoints.U1A, cephPoints.U1E, cephPoints.S, cephPoints.N));
     }
 
-    return angles;
+    
+    // ===== RRZ: Normalize (angle vs 180-angle) using published means =====
+    // This prevents "supplement flips" that create abnormal results when a line is drawn in reverse.
+    const _ANGLE_MEANS = {
+      // Steiner / core
+      SNA: 82, SNB: 80, ANB: 2,
+      FMA: 21.9, IMPA: 90, FMIA: 65,
+      GoGn_SN: 32,
+      U1_NA: 22, L1_NB: 25,
+      Interincisal: 131,
+      Occlusal_SN: 14,
+      // Downs
+      FacialAngle: 87.8,
+      FacialPlane: 87.8,
+      Convexity: 0,
+      YAxis: 59,
+      CantOcclusal: 9.3,
+      IncisorOcclusal: 104.5,
+      // Eastman
+      SN_Maxillary: 8,
+      U1_Maxillary: 108,
+      MaxMand: 27,
+      // Jarabak / Björk
+      SaddleAngle: 123,
+      ArticularAngle: 143,
+      GonialAngle: 128,
+      Nasolabial: 95
+    };
+
+    Object.keys(_ANGLE_MEANS).forEach(k => {
+      if (typeof angles[k] === 'number' && isFinite(angles[k])) {
+        angles[k] = parseFloat(normalizeAngleToMean(angles[k], _ANGLE_MEANS[k]).toFixed(1));
+      }
+    });
+
+    // Keep legacy aliases in sync AFTER normalization
+    if (angles.GonialAngle !== undefined) angles.Gonial = angles.GonialAngle;
+    if (angles.Convexity !== undefined) angles.FacialConvexity = angles.Convexity;
+    if (angles.FacialDepth !== undefined) angles.Facial = angles.FacialDepth;
+return angles;
   }
 
   function calculateLinearMeasurements() {
@@ -3163,8 +3254,8 @@ function buildRow(label, mean, sd, value, unit, meaningFn){
     document.getElementById('dn_yaxis').innerText = angles.YAxis ? angles.YAxis.toFixed(1) + "°" : "-";
     document.getElementById('dn_cant_op').innerText = angles.CantOcclusal ? angles.CantOcclusal.toFixed(1) + "°" : "-";
     document.getElementById('dn_inter').innerText = angles.Interincisal ? angles.Interincisal.toFixed(1) + "°" : "-";
-    document.getElementById('dn_inc_occl').innerText = angles.IncisorOcclusal ? angles.IncisorOcclusal.toFixed(1) + "°" : "-";
-    document.getElementById('dn_inc_mp').innerText = angles.IMPA ? angles.IMPA.toFixed(1) + "°" : "-";
+    document.getElementById('dn_inc_occl').innerText = (angles.DownIncisorOcclusal !== undefined && angles.DownIncisorOcclusal !== null) ? angles.DownIncisorOcclusal.toFixed(1) + "°" : "-";
+    document.getElementById('dn_inc_mp').innerText = (angles.DownIncisorMandPlane !== undefined && angles.DownIncisorMandPlane !== null) ? angles.DownIncisorMandPlane.toFixed(1) + "°" : "-";
     document.getElementById('dn_u1_apog').innerText = measurements.u1_apog_mm ? measurements.u1_apog_mm.toFixed(1) + "mm" : "-";
     document.getElementById('dn_l1_apog').innerText = measurements.l1_apog_mm ? measurements.l1_apog_mm.toFixed(1) + "mm" : "-";
 
@@ -3316,8 +3407,8 @@ function buildRow(label, mean, sd, value, unit, meaningFn){
       buildRow('Y-axis', 59.0, 6.0, angles.YAxis, '°', (v)=> '-'),
       buildRow('Cant of occlusal', 9.3, 3.8, angles.CantOcclusal, '°', (v)=> '-'),
       buildRow('Interincisal angle', 128.0, 5.3, angles.Interincisal, '°', (v)=> meaningInterincisal(v)),
-      buildRow('Incisor occlusal plane', 104.5, 3.5, angles.IncisorOcclusal, '°', (v)=> '-'),
-      buildRow('Incisor mandibular plane', 1.4, 3.8, angles.IMPA, '°', (v)=> meaningIMPA(v)),
+      buildRow('Incisor occlusal plane angle', 14.5, 3.5, angles.DownIncisorOcclusal, '°', (v)=> '-'),
+      buildRow('Incisor mandibular plane angle', 1.4, 3.8, angles.DownIncisorMandPlane, '°', (v)=> '-'),
       buildRow('Upper incisor to A-Pog', 2.7, 1.8, u1_apog_mm, 'mm', (v)=> v<=4 ? 'Normal' : 'Protrusive'),
       buildRow('Lower incisor to A-Pog', 1.5, 1.8, l1_apog_mm, 'mm', (v)=> v<=3 ? 'Normal' : 'Protrusive'),
       buildRow('Gonial angle', 128.0, 7.0, angles.Gonial, '°', (v)=> v>=110 && v<=130 ? 'Normal' : 'Abnormal'),
